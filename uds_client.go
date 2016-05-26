@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"net"
 	"os"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -21,7 +22,7 @@ func createByteArray(size int) []byte {
 	return buffer
 }
 
-func writeToUdsSocket(c net.Conn, wg *sync.WaitGroup, numberOfMessages int, dataSize int, latencies []int64, index int) {
+func writeToUdsSocket(c net.Conn, wg *sync.WaitGroup, numberOfMessages int, dataSize int, latencies []int, index int) {
 	for i := 0; i < numberOfMessages; i++ {
 		t0 := time.Now()
 		_, err := c.Write(createByteArray(dataSize))
@@ -30,7 +31,7 @@ func writeToUdsSocket(c net.Conn, wg *sync.WaitGroup, numberOfMessages int, data
 			break
 		}
 		t1 := time.Now()
-		latencies[index*numberOfMessages+i] = t1.Sub(t0).Nanoseconds() / 1000
+		latencies[index*numberOfMessages+i] = int(t1.Sub(t0).Nanoseconds() / 1000)
 	}
 	wg.Done()
 }
@@ -86,7 +87,7 @@ func createConnectionPool(size int) []net.Conn {
 
 func main() {
 	args := os.Args[1:]
-	if len(args) != 4 {
+	if len(args) != 3 {
 		fmt.Printf("Usage: ./uds_client <max concurrency> <max size in bytes> <Connection pool size>")
 	}
 	maxConcurrency, err := strconv.Atoi(args[0])
@@ -102,32 +103,64 @@ func main() {
 
 	writer := csv.NewWriter(file)
 
-	header := []string{"connections", "concurrency", "number of messages", "size in bytes", "Average Latency in us"}
+	header := []string{"connections", "concurrency", "size in bytes", "Average Latency in us", "99thPercentileLatency in us", "95thPercentileLatency in us", "throughput"}
 
 	writer.Write(header)
 
 	defer writer.Flush()
 
 	connectionPool := createConnectionPool(connectionPoolSize)
-	numberOfMessages := 256
+	numberOfMessages := 16384
 	for numOfThreads := 16; numOfThreads <= maxConcurrency; numOfThreads = numOfThreads * 2 {
 		for dataSize := 128; dataSize <= maxSize; dataSize = dataSize * 4 {
 			var wg sync.WaitGroup
 			t0 := time.Now()
-			var latencies = make([]int64, numOfThreads*numberOfMessages)
+			var latencies = make([]int, numOfThreads*numberOfMessages)
 			for i := 0; i < numOfThreads; i++ {
 				wg.Add(1)
 				go writeToUdsSocket(connectionPool[rand.Intn(len(connectionPool))], &wg, numberOfMessages, dataSize, latencies, i)
 			}
 			wg.Wait()
 			t1 := time.Now()
+			var sumOfLatencies int = 0
+			var maxLatency int = latencies[0]
+			var minLatency int = latencies[0]
+			for _, value := range latencies {
+				if value > maxLatency {
+					maxLatency = value
+				}
 
+				if value < minLatency {
+					minLatency = value
+				}
+
+				sumOfLatencies = sumOfLatencies + value
+			}
+			sort.Ints(latencies)
 			numberOfWrites := (numOfThreads * numberOfMessages)
+			averageLatency := float64(sumOfLatencies / numberOfWrites)
 			var timeTakenInMilliSecs int64 = t1.Sub(t0).Nanoseconds() / (1000 * 1000)
 			var throughput int64 = (int64(numberOfWrites*1000) / timeTakenInMilliSecs)
-			record := []string{strconv.Itoa(connectionPoolSize), strconv.Itoa(numOfThreads), strconv.Itoa(numberOfWrites), strconv.Itoa(dataSize), strconv.FormatFloat(float64(throughput), 'f', 2, 64)}
+			var nintyNinthPercentileIndex int = int((99 * numberOfWrites) / 100)
+			var nintyFifthPercentileIndex int = int((95 * numberOfWrites) / 100)
+
+			var nintyNinthPercentileLatency int = latencies[nintyNinthPercentileIndex]
+			var nintyFifthPercentileLatency int = latencies[nintyFifthPercentileIndex]
+			record := []string{strconv.Itoa(connectionPoolSize),
+				strconv.Itoa(numOfThreads),
+				strconv.Itoa(dataSize),
+				strconv.FormatFloat(float64(averageLatency), 'f', 2, 64),
+				strconv.FormatFloat(float64(nintyNinthPercentileLatency), 'f', 2, 64),
+				strconv.FormatFloat(float64(nintyFifthPercentileLatency), 'f', 2, 64),
+				strconv.FormatFloat(float64(throughput), 'f', 2, 64)}
+
 			writer.Write(record)
-			fmt.Printf("conns:%d, Conc:%d, noOfMsgs:%d, size:%d bytes,  throughput:%s\n", connectionPoolSize, numOfThreads, numberOfWrites, dataSize, strconv.FormatFloat(float64(throughput), 'f', 2, 64))
+
+			fmt.Printf("conns:%d, Conc:%d, size:%d bytes,  throughput:%s, averageLatency:%s us, 99thPercentileLatency:%s us, 95thPercentileLatency: %s us\n",
+				connectionPoolSize, numOfThreads, dataSize, strconv.FormatFloat(float64(throughput), 'f', 2, 64),
+				strconv.FormatFloat(float64(averageLatency), 'f', 2, 64),
+				strconv.FormatFloat(float64(nintyNinthPercentileLatency), 'f', 2, 64),
+				strconv.FormatFloat(float64(nintyFifthPercentileLatency), 'f', 2, 64))
 		}
 	}
 }
