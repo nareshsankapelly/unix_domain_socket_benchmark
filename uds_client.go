@@ -154,7 +154,7 @@ func main() {
 				numberOfWrites := (numOfThreads * numberOfMessages)
 				averageLatency := float64(sumOfLatencies / uint64(numberOfWrites))
 				var timeTakenInMilliSecs uint64 = uint64(t1.Sub(t0).Nanoseconds() / (1000 * 1000))
-				var throughput uint64 = (uint64(numberOfWrites*1000) / timeTakenInMilliSecs)
+				var throughput uint64 = uint64(uint64(numberOfWrites*1000) / timeTakenInMilliSecs)
 				var nintyNinthPercentileIndex int = int((99 * numberOfWrites) / 100)
 				var nintyFifthPercentileIndex int = int((95 * numberOfWrites) / 100)
 
